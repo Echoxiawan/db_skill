@@ -16,4 +16,8 @@ services:
       # 开启 HTTPS：未给证书时自动生成自签证书到 /data/certs（重启复用）
       DB_MCP_TLS: "true"
       DB_SKILL_HOME: "/data"
+      # Docker 容器内无法自动探测宿主机 IP，填写后证书 SAN 会包含该 IP，
+      # 客户端才能通过宿主机 IP 访问 HTTPS 服务（不填则只信任 localhost）。
+      # 多个 IP / 域名用逗号分隔，例如：192.168.1.100,myserver.example.com
+      DB_MCP_TLS_EXTRA_SANS: "192.168.90.205"
     restart: unless-stopped

@@ -209,16 +209,95 @@ def run_query(sql: str, conn: str = "", type: str = "", host: str = "",
     return _with_conn(args, lambda c, cfg: db_tool.run_query(c, cfg, sql, limit=limit))
 
 
+def _collect_san_entries() -> tuple[list, list]:
+    """探测本机所有可用 IP 和主机名，用于构造证书 SAN。
+
+    返回 (ip_strings, dns_names)。
+    除本地固定项外，通过两路自动探测：
+      1. UDP routing 探测——向外发送 UDP 包，内核选路后从 socket 拿到出口 IP（不真正发包）。
+         可覆盖大多数直接部署场景（如 eth0: 192.168.x.x）。
+      2. 主机名解析——gethostbyname_ex 返回别名和 IP 列表。
+    另支持环境变量 DB_MCP_TLS_EXTRA_SANS（逗号分隔 IP 或域名），
+    用于 Docker 容器内无法自动探测宿主机 IP 的场景。
+    """
+    import socket
+    import ipaddress as _ip
+
+    ips: set[str] = {"127.0.0.1"}
+    dns: set[str] = {"localhost"}
+
+    # 路由探测：向公共 IP 发 UDP（不真正收发数据），从 socket 取出本机出口 IP
+    for target in ("8.8.8.8", "1.1.1.1", "114.114.114.114"):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(1)
+            s.connect((target, 80))
+            ips.add(s.getsockname()[0])
+            s.close()
+            break
+        except Exception:
+            pass
+
+    # 主机名解析
+    try:
+        hostname = socket.gethostname()
+        dns.add(hostname)
+        _, aliases, addrs = socket.gethostbyname_ex(hostname)
+        for alias in aliases:
+            dns.add(alias)
+        for addr in addrs:
+            ips.add(addr)
+    except Exception:
+        pass
+
+    # 环境变量追加（Docker 宿主机 IP、公网域名等）
+    extra = os.environ.get("DB_MCP_TLS_EXTRA_SANS", "").strip()
+    if extra:
+        for entry in extra.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            try:
+                _ip.ip_address(entry)
+                ips.add(entry)
+            except ValueError:
+                dns.add(entry)  # 不是 IP，当 DNS name 加
+
+    return sorted(ips), sorted(dns)
+
+
+def _cert_fingerprint(ips: list[str], dns_names: list[str]) -> str:
+    """根据 SAN 内容生成指纹字符串，用于检测证书是否需要重新生成。"""
+    import hashlib, json
+    data = json.dumps({"ips": ips, "dns": dns_names}, sort_keys=True)
+    return hashlib.sha256(data.encode()).hexdigest()[:16]
+
+
 def ensure_self_signed_cert() -> tuple:
     """确保自签证书存在并返回 (certfile, keyfile) 路径。
+
     存到 DB_SKILL_HOME/certs/（docker 下即挂载的 /data，重启复用、不重复生成）。
-    已存在则直接复用；用纯 Python 的 cryptography 生成，不依赖 openssl 命令。"""
+    证书 SAN 自动包含：
+      - localhost / 127.0.0.1（固定项）
+      - 本机所有网卡 IP（通过路由探测 + 主机名解析）
+      - DB_MCP_TLS_EXTRA_SANS 中手动指定的 IP / 域名（Docker 部署时填宿主机 IP）
+    检测到 SAN 覆盖的 IP 发生变化时自动重新生成证书。
+    """
+    import ipaddress as _ip
     cert_dir = store.STORE_DIR / "certs"
     cert_dir.mkdir(parents=True, exist_ok=True)
     certfile = cert_dir / "cert.pem"
     keyfile = cert_dir / "key.pem"
+    fp_file = cert_dir / "cert.fingerprint"
+
+    ips, dns_names = _collect_san_entries()
+    fingerprint = _cert_fingerprint(ips, dns_names)
+
+    # 已存在则检查指纹，匹配就复用，不匹配则重新生成
     if certfile.exists() and keyfile.exists():
-        return str(certfile), str(keyfile)
+        if fp_file.exists() and fp_file.read_text().strip() == fingerprint:
+            return str(certfile), str(keyfile)
+        print(f"[db-inspector] 检测到 IP 变化，重新生成证书 (fingerprint: {fingerprint})", file=sys.stderr)
 
     try:
         from cryptography import x509
@@ -226,16 +305,25 @@ def ensure_self_signed_cert() -> tuple:
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
         import datetime
-        import ipaddress
     except ImportError:
         raise SystemExit("[ERROR] HTTPS 自动证书需要 cryptography: pip install cryptography")
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
-    san = x509.SubjectAlternativeName([
-        x509.DNSName("localhost"),
-        x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
-    ])
+
+    # 主 CN 优先用主机名，fallback localhost
+    cn = dns_names[0] if dns_names else "localhost"
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+
+    san_entries = []
+    for d in dns_names:
+        san_entries.append(x509.DNSName(d))
+    for ip_str in ips:
+        try:
+            san_entries.append(x509.IPAddress(_ip.ip_address(ip_str)))
+        except ValueError:
+            pass
+
+    san = x509.SubjectAlternativeName(san_entries)
     now = datetime.datetime.now(datetime.timezone.utc)
     cert = (
         x509.CertificateBuilder()
@@ -253,11 +341,16 @@ def ensure_self_signed_cert() -> tuple:
         encryption_algorithm=serialization.NoEncryption(),
     ))
     certfile.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    fp_file.write_text(fingerprint)
     try:
         os.chmod(keyfile, 0o600)
     except OSError:
         pass
+    ip_list = ", ".join(ips)
+    dns_list = ", ".join(dns_names)
     print(f"[db-inspector] 已自动生成自签证书: {cert_dir}", file=sys.stderr)
+    print(f"[db-inspector]   SAN IP : {ip_list}", file=sys.stderr)
+    print(f"[db-inspector]   SAN DNS: {dns_list}", file=sys.stderr)
     return str(certfile), str(keyfile)
 
 

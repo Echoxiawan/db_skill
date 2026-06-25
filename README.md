@@ -117,8 +117,18 @@ docker compose logs -f
 docker compose down
 ```
 
-启动后端点为 `https://localhost:8765/mcp`（compose 默认开启 TLS，自动生成自签证书到 `./data/certs`）。
+启动后端点为 `https://<宿主机IP>:8765/mcp`（compose 默认开启 TLS，自动生成自签证书到 `./data/certs`）。
 连接信息持久化到宿主机 `./data/connections.json`。
+
+**Docker + HTTPS + 宿主机 IP 访问**：容器内无法自动探测宿主机 IP，需在 `docker-compose.yml`
+中取消注释并填写 `DB_MCP_TLS_EXTRA_SANS`：
+
+```yaml
+DB_MCP_TLS_EXTRA_SANS: "192.168.90.205"   # 填你的服务器 IP
+```
+
+证书 SAN 会包含该 IP，客户端用 `https://192.168.90.205:8765/mcp` 即可连通。
+IP 变更后删掉 `./data/certs/` 目录（或修改 EXTRA_SANS），重启容器会自动重新生成证书。
 
 > 想用明文 HTTP，把 compose 里的 `DB_MCP_TLS` 改为 `"false"` 即可。
 
@@ -143,6 +153,7 @@ docker run -d --name db-inspector-mcp \
 | `DB_MCP_PORT` | `8765` | 监听端口 |
 | `DB_MCP_TRANSPORT` | `streamable-http` | 传输方式：`streamable-http` / `sse` / `stdio` |
 | `DB_MCP_TLS` | `true` | 开启 HTTPS；未给证书时自动生成自签证书到 `/data/certs`（重启复用） |
+| `DB_MCP_TLS_EXTRA_SANS` | _(空)_ | 证书 SAN 额外追加的 IP 或域名（逗号分隔）。Docker 容器内无法自动探测宿主机 IP，需在此填写，否则客户端通过宿主机 IP 访问时 TLS 握手失败。示例：`192.168.90.205` 或 `192.168.90.205,myserver.com` |
 | `DB_SKILL_HOME` | `/data` | 连接信息 + 证书存储目录（挂卷持久化） |
 
 ### 关于连接信息共享
