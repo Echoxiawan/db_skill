@@ -1,0 +1,17 @@
+services:
+  db-inspector-mcp:
+    build: .
+    image: db-inspector-mcp:latest
+    container_name: db-inspector-mcp
+    ports:
+      # 宿主机端口:容器端口。改左边即可换对外端口
+      - "8765:8765"
+    volumes:
+      # 连接信息持久化到宿主机当前目录下的 ./data
+      - ./data:/data
+    environment:
+      DB_MCP_HOST: "0.0.0.0"
+      DB_MCP_PORT: "8765"
+      DB_MCP_TRANSPORT: "streamable-http"
+      DB_SKILL_HOME: "/data"
+    restart: unless-stopped

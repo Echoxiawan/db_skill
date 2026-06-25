@@ -1,0 +1,7 @@
+# db_tool.py 依赖（按需安装，用哪个库装哪个）
+# MySQL:
+mysql-connector-python>=8.0
+# Oracle（thin 模式，无需安装 Oracle Client）:
+oracledb>=1.4
+# 仅 MCP 模式（mcp_server.py）需要，skill 模式不需要：
+mcp>=1.0
