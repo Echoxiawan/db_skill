@@ -1,2 +1,12 @@
 /.venv/
 .idea
+
+# 敏感数据：绝不入库
+# Docker 挂载卷（含明文密码的 connections.json 与自签私钥）
+/data/
+# 证书与私钥
+certs/
+*.pem
+*.key
+# 连接信息（万一在项目内生成）
+connections.json

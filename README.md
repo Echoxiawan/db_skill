@@ -73,8 +73,14 @@ python3 scripts/db_tool.py data   --conn root --table users --limit 50
 ```bash
 pip install -r scripts/requirements.txt   # 含 mcp
 
-# 无参数启动 = 默认 streamable-http，监听 127.0.0.1:8765，端点 /mcp
+# 无参数启动 = 默认 streamable-http（HTTP），监听 127.0.0.1:8765，端点 /mcp
 python3 scripts/mcp_server.py
+
+# 开启 HTTPS：未给证书时自动生成自签证书到 ~/.db_skill/certs（重启复用）
+python3 scripts/mcp_server.py --tls
+
+# 用正式证书走 HTTPS
+python3 scripts/mcp_server.py --certfile /path/cert.pem --keyfile /path/key.pem
 
 # 自定义地址 / 端口
 python3 scripts/mcp_server.py --host 0.0.0.0 --port 9000
@@ -84,12 +90,13 @@ python3 scripts/mcp_server.py --transport sse      # 旧版 SSE（端点 /sse）
 python3 scripts/mcp_server.py --transport stdio    # stdio（部分客户端只支持这个）
 ```
 
-也可用环境变量覆盖：`DB_MCP_HOST` / `DB_MCP_PORT` / `DB_MCP_TRANSPORT`。
+也可用环境变量覆盖：`DB_MCP_HOST` / `DB_MCP_PORT` / `DB_MCP_TRANSPORT` / `DB_MCP_TLS`
+（`DB_MCP_TLS=true` 等价 `--tls`）。
 
 端点：
 
-- **streamable-http（默认）**：`http://<host>:<port>/mcp`
-- SSE：`http://<host>:<port>/sse`
+- **streamable-http（默认）**：`http://<host>:<port>/mcp`（开 TLS 后为 `https://`）
+- SSE：`http://<host>:<port>/sse`（开 TLS 后为 `https://`）
 
 ---
 
@@ -110,7 +117,10 @@ docker compose logs -f
 docker compose down
 ```
 
-启动后 streamable-http 端点为 `http://localhost:8765/mcp`。连接信息持久化到宿主机 `./data/connections.json`。
+启动后端点为 `https://localhost:8765/mcp`（compose 默认开启 TLS，自动生成自签证书到 `./data/certs`）。
+连接信息持久化到宿主机 `./data/connections.json`。
+
+> 想用明文 HTTP，把 compose 里的 `DB_MCP_TLS` 改为 `"false"` 即可。
 
 ### 用 docker 裸命令
 
@@ -132,7 +142,8 @@ docker run -d --name db-inspector-mcp \
 | `DB_MCP_HOST` | `0.0.0.0` | 监听地址（容器内必须 `0.0.0.0` 才能对外暴露） |
 | `DB_MCP_PORT` | `8765` | 监听端口 |
 | `DB_MCP_TRANSPORT` | `streamable-http` | 传输方式：`streamable-http` / `sse` / `stdio` |
-| `DB_SKILL_HOME` | `/data` | 连接信息存储目录（挂卷持久化） |
+| `DB_MCP_TLS` | `true` | 开启 HTTPS；未给证书时自动生成自签证书到 `/data/certs`（重启复用） |
+| `DB_SKILL_HOME` | `/data` | 连接信息 + 证书存储目录（挂卷持久化） |
 
 ### 关于连接信息共享
 
@@ -161,6 +172,10 @@ docker run -d --name db-inspector-mcp \
   }
 }
 ```
+
+> 若服务端开了 TLS（本地 `--tls` 或 Docker 默认），URL 改用 `https://`：
+> `https://127.0.0.1:8765/mcp`。自签证书会被客户端视为"不受信任"，
+> 需在客户端信任该证书或关闭证书校验；公网正式用请换正规证书或在前面挂 Nginx 做 TLS 终止。
 
 旧版 SSE（仅当客户端不支持 streamable-http 时，需以 `--transport sse` 启动服务）：
 

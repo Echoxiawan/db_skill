@@ -13,5 +13,7 @@ services:
       DB_MCP_HOST: "0.0.0.0"
       DB_MCP_PORT: "8765"
       DB_MCP_TRANSPORT: "streamable-http"
+      # 开启 HTTPS：未给证书时自动生成自签证书到 /data/certs（重启复用）
+      DB_MCP_TLS: "true"
       DB_SKILL_HOME: "/data"
     restart: unless-stopped

@@ -209,6 +209,58 @@ def run_query(sql: str, conn: str = "", type: str = "", host: str = "",
     return _with_conn(args, lambda c, cfg: db_tool.run_query(c, cfg, sql, limit=limit))
 
 
+def ensure_self_signed_cert() -> tuple:
+    """确保自签证书存在并返回 (certfile, keyfile) 路径。
+    存到 DB_SKILL_HOME/certs/（docker 下即挂载的 /data，重启复用、不重复生成）。
+    已存在则直接复用；用纯 Python 的 cryptography 生成，不依赖 openssl 命令。"""
+    cert_dir = store.STORE_DIR / "certs"
+    cert_dir.mkdir(parents=True, exist_ok=True)
+    certfile = cert_dir / "cert.pem"
+    keyfile = cert_dir / "key.pem"
+    if certfile.exists() and keyfile.exists():
+        return str(certfile), str(keyfile)
+
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        import datetime
+        import ipaddress
+    except ImportError:
+        raise SystemExit("[ERROR] HTTPS 自动证书需要 cryptography: pip install cryptography")
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    san = x509.SubjectAlternativeName([
+        x509.DNSName("localhost"),
+        x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
+    ])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name).issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=3650))
+        .add_extension(san, critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    keyfile.write_bytes(key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    ))
+    certfile.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    try:
+        os.chmod(keyfile, 0o600)
+    except OSError:
+        pass
+    print(f"[db-inspector] 已自动生成自签证书: {cert_dir}", file=sys.stderr)
+    return str(certfile), str(keyfile)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="db-inspector MCP 服务（默认 streamable-http 传输）")
     parser.add_argument("--transport", choices=["streamable-http", "sse", "stdio"],
@@ -216,6 +268,13 @@ if __name__ == "__main__":
                         help="传输方式，默认 streamable-http")
     parser.add_argument("--host", help="HTTP 监听地址，覆盖默认/环境变量")
     parser.add_argument("--port", type=int, help="HTTP 监听端口，覆盖默认/环境变量")
+    parser.add_argument("--certfile", default=os.environ.get("DB_MCP_CERTFILE"),
+                        help="TLS 证书文件路径，提供后以 HTTPS 启动（仅 http 类传输）")
+    parser.add_argument("--keyfile", default=os.environ.get("DB_MCP_KEYFILE"),
+                        help="TLS 私钥文件路径，配合 --certfile")
+    parser.add_argument("--tls", action="store_true",
+                        default=os.environ.get("DB_MCP_TLS", "").lower() in ("1", "true", "yes"),
+                        help="以 HTTPS 启动；未提供 --certfile/--keyfile 时自动生成自签证书并复用")
     cli = parser.parse_args()
 
     if cli.host:
@@ -224,8 +283,34 @@ if __name__ == "__main__":
         mcp.settings.port = cli.port
 
     _paths = {"streamable-http": "/mcp", "sse": "/sse"}
-    if cli.transport in _paths:
+    # 显式给了证书 → 用它；只开 --tls 没给证书 → 自动生成自签证书
+    if cli.certfile and cli.keyfile:
+        certfile, keyfile = cli.certfile, cli.keyfile
+        use_tls = True
+    elif cli.tls:
+        certfile, keyfile = ensure_self_signed_cert()
+        use_tls = True
+    else:
+        certfile = keyfile = None
+        use_tls = False
+
+    if cli.transport == "stdio":
+        if use_tls:
+            print("[db-inspector] stdio 传输不支持 TLS，忽略证书", file=sys.stderr)
+        mcp.run(transport="stdio")
+    elif use_tls:
+        # FastMCP.run() 不暴露 SSL，故取出 ASGI app 用 uvicorn 直接加载证书跑 HTTPS
+        import uvicorn
+        app = (mcp.streamable_http_app() if cli.transport == "streamable-http"
+               else mcp.sse_app())
+        print(f"[db-inspector] {cli.transport} (HTTPS) 服务启动: "
+              f"https://{mcp.settings.host}:{mcp.settings.port}{_paths[cli.transport]}",
+              file=sys.stderr)
+        uvicorn.run(app, host=mcp.settings.host, port=mcp.settings.port,
+                    ssl_certfile=certfile, ssl_keyfile=keyfile,
+                    log_level=mcp.settings.log_level.lower())
+    else:
         print(f"[db-inspector] {cli.transport} 服务启动: "
               f"http://{mcp.settings.host}:{mcp.settings.port}{_paths[cli.transport]}",
               file=sys.stderr)
-    mcp.run(transport=cli.transport)
+        mcp.run(transport=cli.transport)

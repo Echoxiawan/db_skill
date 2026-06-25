@@ -5,3 +5,5 @@ mysql-connector-python>=8.0
 oracledb>=1.4
 # 仅 MCP 模式（mcp_server.py）需要，skill 模式不需要：
 mcp>=1.0
+# 仅 MCP 的 HTTPS 自动证书需要（纯 Python 生成自签证书，不依赖 openssl 命令）：
+cryptography>=42
