@@ -10,6 +10,16 @@
 
 ---
 
+## 一句话安装（发给 AI 助手）
+
+把下面这句话发给你的 AI 编程助手（Claude Code / Cursor / Gemini CLI / Codex 等），它会自己读文档并完成安装：
+
+> 请阅读 https://github.com/Echoxiawan/db_skill 的 INSTALL.md，按适合当前工具的方式，把 db-inspector 这个 skill 安装到本机并装好依赖。
+
+其他工具的手动安装步骤见 [INSTALL.md](INSTALL.md)。
+
+---
+
 ## 目录结构
 
 ```
