@@ -200,9 +200,10 @@ def list_tables(conn, cfg: dict) -> list:
 def table_schema(conn, cfg: dict, table: str, sample: int = 3) -> dict:
     cur = conn.cursor()
     if cfg["type"] == "mysql":
-        cur.execute(f"DESCRIBE {_quote_ident(cfg, table)}")
-        columns = [{"field": r[0], "type": r[1], "null": r[2], "key": r[3],
-                    "default": r[4], "extra": r[5]} for r in cur.fetchall()]
+        # SHOW FULL COLUMNS 比 DESCRIBE 多返回 Collation/Privileges/Comment
+        cur.execute(f"SHOW FULL COLUMNS FROM {_quote_ident(cfg, table)}")
+        columns = [{"field": r[0], "type": r[1], "null": r[3], "key": r[4],
+                    "default": r[5], "extra": r[6], "comment": r[8]} for r in cur.fetchall()]
         cur.execute(f"SHOW INDEX FROM {_quote_ident(cfg, table)}")
         indexes = [{"name": r[2], "column": r[4], "unique": r[1] == 0} for r in cur.fetchall()]
         cur.execute("""
@@ -214,11 +215,14 @@ def table_schema(conn, cfg: dict, table: str, sample: int = 3) -> dict:
     else:  # oracle
         owner = (cfg.get("user", "") or "").upper()
         cur.execute("""
-            SELECT column_name, data_type, nullable, data_default, data_length
-            FROM all_tab_columns WHERE owner=:o AND table_name=:t ORDER BY column_id
+            SELECT t.column_name, t.data_type, t.nullable, t.data_default, t.data_length, c.comments
+            FROM all_tab_columns t
+            LEFT JOIN all_col_comments c
+              ON t.owner=c.owner AND t.table_name=c.table_name AND t.column_name=c.column_name
+            WHERE t.owner=:o AND t.table_name=:t ORDER BY t.column_id
         """, o=owner, t=table)
         columns = [{"field": r[0], "type": r[1], "null": "YES" if r[2] == "Y" else "NO",
-                    "default": r[3], "length": r[4]} for r in cur.fetchall()]
+                    "default": r[3], "length": r[4], "comment": r[5]} for r in cur.fetchall()]
         cur.execute("""
             SELECT i.index_name, c.column_name, i.uniqueness
             FROM all_indexes i JOIN all_ind_columns c
